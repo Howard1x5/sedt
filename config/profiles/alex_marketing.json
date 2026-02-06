@@ -1,0 +1,83 @@
+{
+  "name": "Alex",
+  "role": "Marketing Coordinator",
+  "department": "Marketing",
+  "experience_level": "mid",
+
+  "work_schedule": {
+    "start_time": "09:00",
+    "end_time": "17:00",
+    "lunch_break": {
+      "start": "12:00",
+      "duration_minutes": 60
+    },
+    "coffee_breaks": ["10:30", "15:00"]
+  },
+
+  "applications": {
+    "primary": ["outlook", "chrome", "word", "excel", "powerpoint", "teams"],
+    "secondary": ["notepad", "explorer", "snipping_tool"],
+    "occasional": ["adobe_reader", "zoom"]
+  },
+
+  "activities": {
+    "email": {
+      "frequency": "high",
+      "check_interval_minutes": 15,
+      "avg_emails_sent_per_day": 12,
+      "attachments_frequency": "medium"
+    },
+    "browser": {
+      "frequency": "high",
+      "typical_sites": [
+        "linkedin.com",
+        "canva.com",
+        "analytics.google.com",
+        "hootsuite.com",
+        "mailchimp.com",
+        "buffer.com",
+        "trello.com",
+        "drive.google.com"
+      ],
+      "tabs_open_avg": 8,
+      "session_duration_minutes": 30
+    },
+    "documents": {
+      "frequency": "medium",
+      "types": ["docx", "xlsx", "pptx", "pdf"],
+      "common_tasks": [
+        "create_presentation",
+        "edit_spreadsheet",
+        "write_copy",
+        "review_report"
+      ]
+    },
+    "meetings": {
+      "avg_per_day": 2,
+      "typical_duration_minutes": 45,
+      "platforms": ["teams", "zoom"]
+    }
+  },
+
+  "behavior_patterns": {
+    "focus_level": "medium",
+    "multitasking": true,
+    "phone_checks": "frequent",
+    "procrastination_tendency": "moderate",
+    "typing_speed": "average",
+    "mouse_usage": "heavy"
+  },
+
+  "file_paths": {
+    "documents": "C:\\Users\\Alex\\Documents",
+    "downloads": "C:\\Users\\Alex\\Downloads",
+    "desktop": "C:\\Users\\Alex\\Desktop",
+    "work_folder": "C:\\Users\\Alex\\Documents\\Marketing"
+  },
+
+  "network_behavior": {
+    "external_sites": true,
+    "cloud_storage": ["onedrive", "google_drive"],
+    "vpn_usage": false
+  }
+}

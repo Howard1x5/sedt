@@ -1,0 +1,14 @@
+# SEDT - Simulated Enterprise Detection Testing
+# Python dependencies
+
+# Core dependencies (Linux decision engine)
+anthropic>=0.18.0  # Claude API client (for future LLM integration)
+
+# Windows ActionExecutor dependencies (install on Windows VM)
+# pyautogui>=0.9.54  # For mouse/keyboard simulation (optional)
+
+# Development
+pytest>=7.0.0
+pytest-cov>=4.0.0
+black>=23.0.0
+mypy>=1.0.0

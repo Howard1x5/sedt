@@ -1,0 +1,375 @@
+"""
+ActionExecutor - Executes actions on Windows endpoints.
+
+This script runs on the Windows VM and receives commands from the
+Linux-based DecisionEngine via SSH. It executes real Windows actions
+that generate authentic Sysmon/Windows Event logs.
+
+Usage:
+    python action_executor.py --action '{"action_type": "open_application", "target": "notepad", "parameters": {}}'
+
+The script outputs JSON to stdout for the RemoteExecutor to parse.
+"""
+
+import argparse
+import json
+import os
+import subprocess
+import sys
+import time
+from datetime import datetime
+from pathlib import Path
+from typing import Callable, Dict, Any
+
+
+class ActionExecutor:
+    """
+    Executes Windows actions to generate realistic telemetry.
+
+    Each action method should:
+    1. Perform a real Windows operation
+    2. Return success/failure status
+    3. Generate authentic Sysmon events as a side effect
+    """
+
+    def __init__(self):
+        """Initialize the action executor with available actions."""
+        self.actions: Dict[str, Callable] = {
+            "open_application": self.open_application,
+            "close_application": self.close_application,
+            "browse_web": self.browse_web,
+            "create_file": self.create_file,
+            "edit_file": self.edit_file,
+            "delete_file": self.delete_file,
+            "copy_file": self.copy_file,
+            "check_email": self.check_email,
+            "send_email": self.send_email,
+            "idle": self.idle,
+            "type_text": self.type_text,
+            "click": self.click,
+            "powershell": self.run_powershell,
+        }
+
+    def execute(self, action_type: str, target: str, parameters: dict) -> dict:
+        """
+        Execute an action and return the result.
+
+        Args:
+            action_type: The type of action to execute
+            target: The target of the action
+            parameters: Additional parameters
+
+        Returns:
+            Dictionary with success, output, error, duration_ms
+        """
+        start_time = time.time()
+
+        if action_type not in self.actions:
+            return {
+                "success": False,
+                "error": f"Unknown action type: {action_type}",
+                "duration_ms": 0
+            }
+
+        try:
+            result = self.actions[action_type](target, parameters)
+            duration_ms = int((time.time() - start_time) * 1000)
+
+            return {
+                "success": True,
+                "output": result if isinstance(result, str) else str(result),
+                "error": "",
+                "duration_ms": duration_ms
+            }
+
+        except Exception as e:
+            duration_ms = int((time.time() - start_time) * 1000)
+            return {
+                "success": False,
+                "output": "",
+                "error": str(e),
+                "duration_ms": duration_ms
+            }
+
+    # ==================== Application Actions ====================
+
+    def open_application(self, target: str, parameters: dict) -> str:
+        """
+        Open an application by name.
+
+        Generates: Sysmon Event ID 1 (Process Creation)
+        """
+        app_paths = {
+            "notepad": "notepad.exe",
+            "chrome": r"C:\Program Files\Google\Chrome\Application\chrome.exe",
+            "edge": r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe",
+            "word": r"C:\Program Files\Microsoft Office\root\Office16\WINWORD.EXE",
+            "excel": r"C:\Program Files\Microsoft Office\root\Office16\EXCEL.EXE",
+            "powerpoint": r"C:\Program Files\Microsoft Office\root\Office16\POWERPNT.EXE",
+            "outlook": r"C:\Program Files\Microsoft Office\root\Office16\OUTLOOK.EXE",
+            "explorer": "explorer.exe",
+            "cmd": "cmd.exe",
+            "powershell": "powershell.exe",
+            "calculator": "calc.exe",
+            "paint": "mspaint.exe",
+            "snipping_tool": "SnippingTool.exe",
+            "teams": r"C:\Users\%USERNAME%\AppData\Local\Microsoft\Teams\current\Teams.exe",
+        }
+
+        app_path = app_paths.get(target.lower(), target)
+        app_path = os.path.expandvars(app_path)
+
+        # Use START command to open without blocking
+        subprocess.Popen(
+            f'start "" "{app_path}"',
+            shell=True,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL
+        )
+
+        return f"Opened {target}"
+
+    def close_application(self, target: str, parameters: dict) -> str:
+        """
+        Close an application by process name.
+
+        Generates: Sysmon Event ID 5 (Process Terminated)
+        """
+        process_name = target if target.endswith(".exe") else f"{target}.exe"
+
+        subprocess.run(
+            f'taskkill /IM "{process_name}" /F',
+            shell=True,
+            capture_output=True
+        )
+
+        return f"Closed {target}"
+
+    # ==================== Browser Actions ====================
+
+    def browse_web(self, target: str, parameters: dict) -> str:
+        """
+        Open a URL in the default browser.
+
+        Generates:
+        - Sysmon Event ID 1 (Process Creation for browser)
+        - Sysmon Event ID 3 (Network Connection)
+        - Sysmon Event ID 22 (DNS Query)
+        """
+        url = target if target.startswith("http") else f"https://{target}"
+        duration = parameters.get("duration_seconds", 30)
+
+        # Open URL in default browser
+        subprocess.Popen(
+            f'start "" "{url}"',
+            shell=True,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL
+        )
+
+        # Simulate browsing time
+        if duration > 0:
+            time.sleep(min(duration, 5))  # Cap at 5 seconds for responsiveness
+
+        return f"Browsed to {url}"
+
+    # ==================== File Actions ====================
+
+    def create_file(self, target: str, parameters: dict) -> str:
+        """
+        Create a new file with optional content.
+
+        Generates: Sysmon Event ID 11 (File Created)
+        """
+        content = parameters.get("content", "")
+        file_path = Path(os.path.expandvars(target))
+
+        # Ensure parent directory exists
+        file_path.parent.mkdir(parents=True, exist_ok=True)
+
+        with open(file_path, "w", encoding="utf-8") as f:
+            f.write(content)
+
+        return f"Created {file_path}"
+
+    def edit_file(self, target: str, parameters: dict) -> str:
+        """
+        Edit/append to an existing file.
+
+        Generates: Sysmon Event ID 11 (File Modified)
+        """
+        content = parameters.get("content", "")
+        mode = parameters.get("mode", "append")  # "append" or "overwrite"
+        file_path = Path(os.path.expandvars(target))
+
+        if not file_path.exists():
+            raise FileNotFoundError(f"File not found: {file_path}")
+
+        write_mode = "a" if mode == "append" else "w"
+        with open(file_path, write_mode, encoding="utf-8") as f:
+            f.write(content)
+
+        return f"Edited {file_path}"
+
+    def delete_file(self, target: str, parameters: dict) -> str:
+        """
+        Delete a file.
+
+        Generates: Sysmon Event ID 23 (File Delete)
+        """
+        file_path = Path(os.path.expandvars(target))
+
+        if file_path.exists():
+            file_path.unlink()
+            return f"Deleted {file_path}"
+        else:
+            return f"File not found: {file_path}"
+
+    def copy_file(self, target: str, parameters: dict) -> str:
+        """
+        Copy a file to a new location.
+
+        Generates: Sysmon Event ID 11 (File Created)
+        """
+        destination = parameters.get("destination")
+        if not destination:
+            raise ValueError("destination parameter required for copy_file")
+
+        source = Path(os.path.expandvars(target))
+        dest = Path(os.path.expandvars(destination))
+
+        import shutil
+        shutil.copy2(source, dest)
+
+        return f"Copied {source} to {dest}"
+
+    # ==================== Email Actions ====================
+
+    def check_email(self, target: str, parameters: dict) -> str:
+        """
+        Simulate checking email by opening Outlook.
+
+        Generates: Process creation events for Outlook
+        """
+        return self.open_application("outlook", parameters)
+
+    def send_email(self, target: str, parameters: dict) -> str:
+        """
+        Simulate sending an email (opens compose window).
+
+        For actual email sending, would need COM automation.
+        """
+        recipient = target
+        subject = parameters.get("subject", "")
+        body = parameters.get("body", "")
+
+        # Use mailto: protocol
+        mailto_url = f"mailto:{recipient}?subject={subject}&body={body}"
+        subprocess.Popen(
+            f'start "" "{mailto_url}"',
+            shell=True,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL
+        )
+
+        return f"Opened email compose to {recipient}"
+
+    # ==================== Input Simulation ====================
+
+    def type_text(self, target: str, parameters: dict) -> str:
+        """
+        Type text into the active window.
+
+        Requires pyautogui or similar library.
+        """
+        try:
+            import pyautogui
+            pyautogui.typewrite(target, interval=0.05)
+            return f"Typed {len(target)} characters"
+        except ImportError:
+            # Fallback: use PowerShell SendKeys
+            escaped = target.replace("'", "''")
+            ps_script = f"""
+            Add-Type -AssemblyName System.Windows.Forms
+            [System.Windows.Forms.SendKeys]::SendWait('{escaped}')
+            """
+            subprocess.run(["powershell", "-Command", ps_script], capture_output=True)
+            return f"Typed {len(target)} characters (SendKeys)"
+
+    def click(self, target: str, parameters: dict) -> str:
+        """
+        Click at specified coordinates or find and click element.
+
+        Requires pyautogui.
+        """
+        x = parameters.get("x", 0)
+        y = parameters.get("y", 0)
+
+        try:
+            import pyautogui
+            pyautogui.click(x, y)
+            return f"Clicked at ({x}, {y})"
+        except ImportError:
+            return "pyautogui not available for click action"
+
+    # ==================== Utility Actions ====================
+
+    def idle(self, target: str, parameters: dict) -> str:
+        """
+        Simulate idle time (worker taking a break, thinking, etc.)
+
+        Generates: No events (intentionally quiet period)
+        """
+        duration = parameters.get("duration_minutes", 1)
+        # Scale down for testing - 1 minute = 1 second
+        time.sleep(min(duration, 5))
+        return f"Idle for {duration} minutes"
+
+    def run_powershell(self, target: str, parameters: dict) -> str:
+        """
+        Execute arbitrary PowerShell command.
+
+        Generates: Sysmon Event ID 1 (PowerShell process)
+        """
+        result = subprocess.run(
+            ["powershell", "-Command", target],
+            capture_output=True,
+            text=True,
+            timeout=30
+        )
+
+        if result.returncode != 0:
+            raise RuntimeError(f"PowerShell error: {result.stderr}")
+
+        return result.stdout.strip()
+
+
+def main():
+    """CLI entry point for ActionExecutor."""
+    parser = argparse.ArgumentParser(description="Execute Windows actions")
+    parser.add_argument(
+        "--action",
+        required=True,
+        help='JSON action payload: {"action_type": "...", "target": "...", "parameters": {}}'
+    )
+
+    args = parser.parse_args()
+
+    try:
+        payload = json.loads(args.action)
+    except json.JSONDecodeError as e:
+        print(json.dumps({"success": False, "error": f"Invalid JSON: {e}"}))
+        sys.exit(1)
+
+    executor = ActionExecutor()
+    result = executor.execute(
+        action_type=payload.get("action_type", ""),
+        target=payload.get("target", ""),
+        parameters=payload.get("parameters", {})
+    )
+
+    print(json.dumps(result))
+
+
+if __name__ == "__main__":
+    main()
