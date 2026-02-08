@@ -13,30 +13,62 @@ Detection rules are only as good as the data they're tested against. SEDT solves
 
 ## Architecture
 
+SEDT uses a split architecture for security and flexibility:
+
 ```
-┌─────────────────────────────────────────────────────────┐
-│                    Windows Endpoint                      │
-│  ┌─────────────────┐    ┌─────────────────────────────┐ │
-│  │  SEDT Agent     │───▶│  Windows Actions            │ │
-│  │  (Python)       │    │  - Process creation         │ │
-│  │                 │    │  - File operations          │ │
-│  │  DecisionEngine │    │  - Network connections      │ │
-│  │  ActionExecutor │    │  - Registry access          │ │
-│  └─────────────────┘    └─────────────────────────────┘ │
-│           │                         │                    │
-│           ▼                         ▼                    │
-│  ┌─────────────────┐    ┌─────────────────────────────┐ │
-│  │  Worker Profile │    │  Sysmon + Windows Events    │ │
-│  │  (JSON persona) │    │  (Authentic telemetry)      │ │
-│  └─────────────────┘    └─────────────────────────────┘ │
-└─────────────────────────────────────────────────────────┘
-                                │
-                                ▼
-                    ┌─────────────────────┐
-                    │    Wazuh Server     │
-                    │  Detection Rules    │
-                    └─────────────────────┘
+┌─────────────────────────────────────┐      ┌─────────────────────────────────────┐
+│         Linux Host                  │      │         Windows Endpoint            │
+│  ┌─────────────────────────────┐   │      │  ┌─────────────────────────────┐   │
+│  │     DecisionEngine          │   │      │  │     ActionExecutor          │   │
+│  │  - LLM API integration      │   │ TCP  │  │  - Socket server (:9999)    │   │
+│  │  - Worker profile logic     │──────────▶  │  - Executes Windows actions  │   │
+│  │  - Contextual decisions     │   │      │  │  - Spawns realistic processes│   │
+│  └─────────────────────────────┘   │      │  └─────────────────────────────┘   │
+│               │                     │      │               │                    │
+│  ┌─────────────────────────────┐   │      │  ┌─────────────────────────────┐   │
+│  │     RemoteExecutor          │   │      │  │  Generated Telemetry        │   │
+│  │  - Socket communication     │   │      │  │  - Sysmon events            │   │
+│  │  - SSH fallback             │   │      │  │  - Windows Security logs    │   │
+│  └─────────────────────────────┘   │      │  │  - Process creation (ID 1)  │   │
+│                                     │      │  │  - Network conn (ID 3)      │   │
+│  ┌─────────────────────────────┐   │      │  │  - File operations (ID 11)  │   │
+│  │     Worker Profile          │   │      │  └─────────────────────────────┘   │
+│  │  (JSON persona config)      │   │      │               │                    │
+│  └─────────────────────────────┘   │      │               ▼                    │
+└─────────────────────────────────────┘      │  ┌─────────────────────────────┐   │
+                                             │  │     Wazuh Agent             │   │
+                                             │  │  (forwards to SIEM)         │   │
+                                             │  └─────────────────────────────┘   │
+                                             └─────────────────────────────────────┘
 ```
+
+**Why split architecture?**
+- API keys stay on Linux host, never touch Windows endpoint
+- Windows VM only receives action commands, no decision logic
+- Easier to scale: one decision engine can drive multiple Windows VMs
+- Cleaner process trees: ActionExecutor runs at login with explorer.exe parent
+
+## Features
+
+### LLM-Powered Decisions
+The DecisionEngine uses an LLM API to make contextual decisions based on:
+- Current time of day and work schedule
+- Recent action history
+- Worker role and typical activities
+- Natural task flow patterns
+
+Falls back to weighted heuristics if API unavailable.
+
+### Realistic Action Execution
+- **Process creation**: Opens real applications (Edge, Notepad, etc.)
+- **Web browsing**: Visits role-appropriate websites
+- **File operations**: Creates, copies, moves files in monitored directories
+- **Email simulation**: Opens mail client, simulates inbox checks
+
+### Socket-Based Communication
+- Persistent connection on port 9999
+- 2-18ms execution latency (vs SSH overhead)
+- ActionExecutor runs at Windows login for realistic process trees
 
 ## Worker Profiles
 
@@ -46,17 +78,71 @@ SEDT uses JSON-based worker personas to drive realistic behavior patterns:
 {
   "name": "Alex",
   "role": "Marketing Coordinator",
-  "work_hours": {"start": "09:00", "end": "17:00"},
-  "activities": {
-    "email": {"frequency": "high", "apps": ["outlook"]},
-    "documents": {"types": ["docx", "xlsx", "pptx"]},
-    "browser": {"sites": ["linkedin.com", "canva.com", "analytics.google.com"]}
+  "work_schedule": {
+    "start_time": "09:00",
+    "end_time": "17:00",
+    "lunch_break": {"start": "12:00", "duration_minutes": 60},
+    "coffee_breaks": ["10:30", "15:00"]
   },
-  "behaviors": {
-    "lunch_break": {"start": "12:00", "duration": 60},
-    "phone_checks": "frequent"
+  "applications": {
+    "primary": ["outlook", "chrome", "word", "excel", "powerpoint", "teams"]
+  },
+  "activities": {
+    "email": {"frequency": "high", "check_interval_minutes": 15},
+    "browser": {
+      "typical_sites": ["linkedin.com", "canva.com", "analytics.google.com"]
+    },
+    "documents": {
+      "common_tasks": ["create_presentation", "edit_spreadsheet", "write_copy"]
+    }
   }
 }
+```
+
+## Installation
+
+### Linux Host (Decision Engine)
+
+```bash
+# Clone repository
+git clone https://github.com/Howard1x5/sedt.git
+cd sedt
+
+# Install dependencies
+pip install -r requirements.txt
+
+# Configure environment
+export ANTHROPIC_API_KEY="your-api-key"
+export SEDT_WINDOWS_HOST="192.168.1.100"
+export SEDT_WINDOWS_USER="analyst"
+export SEDT_WINDOWS_PASSWORD="password"
+```
+
+### Windows Endpoint (Action Executor)
+
+1. Install Python 3.10+
+2. Copy `src/actions/action_executor.py` to `C:\sedt\`
+3. Install Sysmon with SwiftOnSecurity config
+4. Run executor at login:
+   ```batch
+   pythonw.exe C:\sedt\action_executor.py --server --port 9999
+   ```
+
+## Usage
+
+```python
+from src.core.agent import DetectionSimAgent, SimulationConfig
+
+config = SimulationConfig(
+    profile_path="config/profiles/alex_marketing.json",
+    time_compression=60.0,  # 1 real second = 1 simulated minute
+)
+
+agent = DetectionSimAgent(config)
+stats = agent.run()
+
+print(f"Actions executed: {stats.actions_executed}")
+print(f"Simulated duration: {stats.simulated_duration}")
 ```
 
 ## Validation
@@ -69,9 +155,17 @@ Log output is validated against:
 
 ## Requirements
 
-- Windows 10/11 endpoint with Sysmon installed
+**Linux Host:**
 - Python 3.10+
+- anthropic package (for LLM API)
+- SSH access to Windows endpoint
+
+**Windows Endpoint:**
+- Windows 10/11
+- Python 3.10+
+- Sysmon installed
 - Wazuh agent (for log forwarding)
+- Firewall rule allowing port 9999
 
 ## Related Projects
 
