@@ -5,11 +5,12 @@ Manages the simulation loop, time compression, and coordination between
 the DecisionEngine (local) and ActionExecutor (remote Windows VM).
 
 Architecture:
-    This agent runs on Linux (LXC 140) and sends action commands to
-    the Windows VM (VM 111) via SSH using RemoteExecutor.
+    This agent runs on a Linux host and sends action commands to
+    a Windows VM via SSH using RemoteExecutor.
 """
 
 import logging
+import os
 from datetime import datetime, timedelta
 from typing import Optional
 from dataclasses import dataclass, field
@@ -34,12 +35,13 @@ class SimulationConfig:
     end_time: Optional[datetime] = None
     dry_run: bool = False  # If True, don't execute real actions
 
-    # Remote Windows VM configuration
-    windows_host: str = ""  # Set via SEDT_WINDOWS_HOST env var or --windows-host
-    windows_user: str = "analyst"
+    # Remote Windows VM configuration (use environment variables)
+    windows_host: str = field(default_factory=lambda: os.environ.get("SEDT_WINDOWS_HOST", "192.168.1.100"))
+    windows_user: str = field(default_factory=lambda: os.environ.get("SEDT_WINDOWS_USER", "analyst"))
+    windows_password: Optional[str] = field(default_factory=lambda: os.environ.get("SEDT_WINDOWS_PASSWORD"))
     windows_ssh_port: int = 22
     windows_ssh_key: Optional[str] = None
-    windows_python_path: str = "python"
+    windows_python_path: str = r"C:\Users\analyst\AppData\Local\Programs\Python\Python311\python.exe"
     windows_executor_path: str = r"C:\sedt\action_executor.py"
 
     def __post_init__(self):
@@ -119,6 +121,7 @@ class DetectionSimAgent:
             self.remote_executor = RemoteExecutor(
                 windows_host=self.config.windows_host,
                 windows_user=self.config.windows_user,
+                windows_password=self.config.windows_password,
                 ssh_port=self.config.windows_ssh_port,
                 ssh_key_path=self.config.windows_ssh_key,
                 python_path=self.config.windows_python_path,
@@ -148,6 +151,7 @@ class DetectionSimAgent:
             while self.running and self.simulated_time < self.config.end_time:
                 # Get next decision
                 decision = self.decision_engine.decide_next_action(self.state)
+                self.decision_engine.action_history.append(decision)
                 self.stats.total_decisions += 1
 
                 # Log decision

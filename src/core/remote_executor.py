@@ -48,6 +48,7 @@ class RemoteExecutor:
         self,
         windows_host: str,
         windows_user: str = "analyst",
+        windows_password: Optional[str] = None,
         ssh_port: int = 22,
         ssh_key_path: Optional[str] = None,
         python_path: str = "python",
@@ -59,6 +60,7 @@ class RemoteExecutor:
         Args:
             windows_host: IP or hostname of Windows VM
             windows_user: SSH username
+            windows_password: SSH password (uses sshpass if provided)
             ssh_port: SSH port (default 22)
             ssh_key_path: Path to SSH private key (optional)
             python_path: Path to Python on Windows
@@ -66,6 +68,7 @@ class RemoteExecutor:
         """
         self.windows_host = windows_host
         self.windows_user = windows_user
+        self.windows_password = windows_password
         self.ssh_port = ssh_port
         self.ssh_key_path = ssh_key_path
         self.python_path = python_path
@@ -87,7 +90,13 @@ class RemoteExecutor:
 
     def _build_ssh_command(self, remote_command: str) -> list:
         """Build SSH command with proper arguments."""
-        cmd = ["ssh"]
+        cmd = []
+
+        # Use sshpass if password is provided
+        if self.windows_password:
+            cmd.extend(["sshpass", "-p", self.windows_password])
+
+        cmd.append("ssh")
 
         # Add SSH key if specified
         if self.ssh_key_path:
@@ -136,6 +145,9 @@ class RemoteExecutor:
         """
         Execute an action on the Windows VM.
 
+        Uses socket connection if server is running (port 9999),
+        falls back to SSH per-command otherwise.
+
         Args:
             action_type: Type of action (e.g., "open_application", "browse_web")
             target: Target of action (e.g., "chrome", "linkedin.com")
@@ -151,6 +163,46 @@ class RemoteExecutor:
             "parameters": parameters
         }
 
+        # Try socket connection first (for realistic process trees)
+        try:
+            return self._execute_via_socket(payload, action_type)
+        except (ConnectionRefusedError, OSError):
+            # Fall back to SSH
+            return self._execute_via_ssh(payload, action_type)
+
+    def _execute_via_socket(self, payload: dict, action_type: str) -> ExecutionResult:
+        """Execute action via socket connection to persistent executor."""
+        import socket
+
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        sock.settimeout(30)
+
+        try:
+            sock.connect((self.windows_host, 9999))
+            sock.sendall(json.dumps(payload).encode('utf-8'))
+            sock.shutdown(socket.SHUT_WR)
+
+            # Receive response
+            data = b""
+            while True:
+                chunk = sock.recv(4096)
+                if not chunk:
+                    break
+                data += chunk
+
+            response = json.loads(data.decode('utf-8'))
+            return ExecutionResult(
+                success=response.get("success", False),
+                action_type=action_type,
+                output=response.get("output", ""),
+                error=response.get("error", ""),
+                duration_ms=response.get("duration_ms", 0)
+            )
+        finally:
+            sock.close()
+
+    def _execute_via_ssh(self, payload: dict, action_type: str) -> ExecutionResult:
+        """Execute action via SSH (original method)."""
         # Escape the JSON for PowerShell
         payload_json = json.dumps(payload).replace('"', '\\"')
 

@@ -48,6 +48,7 @@ class ActionExecutor:
             "type_text": self.type_text,
             "click": self.click,
             "powershell": self.run_powershell,
+            "file_operation": self.file_operation,
         }
 
     def execute(self, action_type: str, target: str, parameters: dict) -> dict:
@@ -100,32 +101,39 @@ class ActionExecutor:
         Generates: Sysmon Event ID 1 (Process Creation)
         """
         app_paths = {
+            # System apps (always available)
             "notepad": "notepad.exe",
-            "chrome": r"C:\Program Files\Google\Chrome\Application\chrome.exe",
-            "edge": r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe",
-            "word": r"C:\Program Files\Microsoft Office\root\Office16\WINWORD.EXE",
-            "excel": r"C:\Program Files\Microsoft Office\root\Office16\EXCEL.EXE",
-            "powerpoint": r"C:\Program Files\Microsoft Office\root\Office16\POWERPNT.EXE",
-            "outlook": r"C:\Program Files\Microsoft Office\root\Office16\OUTLOOK.EXE",
             "explorer": "explorer.exe",
             "cmd": "cmd.exe",
             "powershell": "powershell.exe",
             "calculator": "calc.exe",
             "paint": "mspaint.exe",
             "snipping_tool": "SnippingTool.exe",
-            "teams": r"C:\Users\%USERNAME%\AppData\Local\Microsoft\Teams\current\Teams.exe",
+            "wordpad": "notepad.exe",  # WordPad not on lean Win11
+            # Edge browser (default on Windows 11)
+            "edge": r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe",
+            "browser": r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe",
+            "chrome": r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe",  # Fallback to Edge
+            # Office apps (may not be installed - fallback to alternatives)
+            "word": "notepad.exe",  # Fallback to Notepad
+            "excel": "notepad.exe",  # Fallback to Notepad
+            "powerpoint": "notepad.exe",  # Fallback to Notepad
+            "outlook": r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe",  # Open webmail
+            "teams": r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe",  # Open web teams
         }
 
         app_path = app_paths.get(target.lower(), target)
         app_path = os.path.expandvars(app_path)
 
-        # Use START command to open without blocking
-        subprocess.Popen(
-            f'start "" "{app_path}"',
-            shell=True,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL
-        )
+        # For system apps, use full path in System32
+        if not os.path.exists(app_path) and "\\" not in app_path:
+            system32_path = os.path.join(os.environ.get("SystemRoot", "C:\\Windows"), "System32", app_path)
+            if os.path.exists(system32_path):
+                app_path = system32_path
+
+        # Launch directly - parent will be python.exe
+        # This creates cleaner process tree than using cmd.exe shell
+        subprocess.Popen([app_path])
 
         return f"Opened {target}"
 
@@ -243,6 +251,65 @@ class ActionExecutor:
 
         return f"Copied {source} to {dest}"
 
+    def file_operation(self, target: str, parameters: dict) -> str:
+        """
+        Perform a file operation (create, copy, move, delete).
+
+        Generates: Sysmon Event ID 11, 23 (File Created/Deleted)
+        """
+        import shutil
+        import random
+        import string
+
+        # Use Downloads folder - Sysmon SwiftOnSecurity config monitors all files here
+        base_path = Path(os.path.expandvars(parameters.get("path", "C:\\Users\\analyst\\Downloads")))
+        base_path.mkdir(parents=True, exist_ok=True)
+
+        # Generate realistic filename
+        prefixes = ["Report", "Notes", "Draft", "Meeting", "Summary", "Budget", "Plan"]
+        extensions = [".txt", ".docx", ".xlsx", ".pdf", ".csv"]
+        filename = f"{random.choice(prefixes)}_{random.randint(1, 999)}{random.choice(extensions)}"
+        file_path = base_path / filename
+
+        if target == "create_file":
+            content = f"Created at {datetime.now().isoformat()}\n"
+            content += ''.join(random.choices(string.ascii_letters + ' ', k=random.randint(50, 200)))
+            with open(file_path, "w", encoding="utf-8") as f:
+                f.write(content)
+            return f"Created {file_path}"
+
+        elif target == "copy_file":
+            # Find an existing file to copy
+            existing = list(base_path.glob("*.*"))
+            if existing:
+                source = random.choice(existing)
+                dest = base_path / f"Copy_of_{source.name}"
+                shutil.copy2(source, dest)
+                return f"Copied {source} to {dest}"
+            return "No files to copy"
+
+        elif target == "move_file":
+            existing = list(base_path.glob("*.*"))
+            if existing:
+                source = random.choice(existing)
+                archive = base_path / "Archive"
+                archive.mkdir(exist_ok=True)
+                dest = archive / source.name
+                shutil.move(str(source), str(dest))
+                return f"Moved {source} to {dest}"
+            return "No files to move"
+
+        elif target == "delete_file":
+            # Only delete temp/draft files
+            temp_files = list(base_path.glob("*.tmp")) + list(base_path.glob("Draft_*"))
+            if temp_files:
+                to_delete = random.choice(temp_files)
+                to_delete.unlink()
+                return f"Deleted {to_delete}"
+            return "No temp files to delete"
+
+        return f"Unknown file operation: {target}"
+
     # ==================== Email Actions ====================
 
     def check_email(self, target: str, parameters: dict) -> str:
@@ -344,31 +411,104 @@ class ActionExecutor:
         return result.stdout.strip()
 
 
+def run_server(host: str = "0.0.0.0", port: int = 9999):
+    """
+    Run ActionExecutor as a persistent socket server.
+
+    This allows the executor to be started at login (via Startup folder)
+    and have explorer.exe as its parent process, creating realistic
+    process trees for spawned applications.
+    """
+    import socket
+
+    executor = ActionExecutor()
+
+    server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    server.bind((host, port))
+    server.listen(5)
+
+    print(f"ActionExecutor server listening on {host}:{port}", flush=True)
+
+    while True:
+        try:
+            client, addr = server.accept()
+
+            # Receive JSON command
+            data = b""
+            while True:
+                chunk = client.recv(4096)
+                if not chunk:
+                    break
+                data += chunk
+                # Check for complete JSON (simple heuristic)
+                if data.strip().endswith(b"}"):
+                    break
+
+            if not data:
+                client.close()
+                continue
+
+            try:
+                payload = json.loads(data.decode('utf-8'))
+                result = executor.execute(
+                    action_type=payload.get("action_type", ""),
+                    target=payload.get("target", ""),
+                    parameters=payload.get("parameters", {})
+                )
+            except json.JSONDecodeError as e:
+                result = {"success": False, "error": f"Invalid JSON: {e}"}
+            except Exception as e:
+                result = {"success": False, "error": str(e)}
+
+            # Send response
+            client.sendall(json.dumps(result).encode('utf-8'))
+            client.close()
+
+        except Exception as e:
+            print(f"Server error: {e}", flush=True)
+
+
 def main():
     """CLI entry point for ActionExecutor."""
     parser = argparse.ArgumentParser(description="Execute Windows actions")
     parser.add_argument(
         "--action",
-        required=True,
         help='JSON action payload: {"action_type": "...", "target": "...", "parameters": {}}'
+    )
+    parser.add_argument(
+        "--server",
+        action="store_true",
+        help="Run in persistent server mode (listens on port 9999)"
+    )
+    parser.add_argument(
+        "--port",
+        type=int,
+        default=9999,
+        help="Port for server mode (default: 9999)"
     )
 
     args = parser.parse_args()
 
-    try:
-        payload = json.loads(args.action)
-    except json.JSONDecodeError as e:
-        print(json.dumps({"success": False, "error": f"Invalid JSON: {e}"}))
-        sys.exit(1)
+    if args.server:
+        run_server(port=args.port)
+    elif args.action:
+        try:
+            payload = json.loads(args.action)
+        except json.JSONDecodeError as e:
+            print(json.dumps({"success": False, "error": f"Invalid JSON: {e}"}))
+            sys.exit(1)
 
-    executor = ActionExecutor()
-    result = executor.execute(
-        action_type=payload.get("action_type", ""),
-        target=payload.get("target", ""),
-        parameters=payload.get("parameters", {})
-    )
+        executor = ActionExecutor()
+        result = executor.execute(
+            action_type=payload.get("action_type", ""),
+            target=payload.get("target", ""),
+            parameters=payload.get("parameters", {})
+        )
 
-    print(json.dumps(result))
+        print(json.dumps(result))
+    else:
+        parser.print_help()
 
 
 if __name__ == "__main__":

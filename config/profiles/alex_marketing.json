@@ -69,10 +69,10 @@
   },
 
   "file_paths": {
-    "documents": "C:\\Users\\Alex\\Documents",
-    "downloads": "C:\\Users\\Alex\\Downloads",
-    "desktop": "C:\\Users\\Alex\\Desktop",
-    "work_folder": "C:\\Users\\Alex\\Documents\\Marketing"
+    "documents": "C:\\Users\\analyst\\Documents",
+    "downloads": "C:\\Users\\analyst\\Downloads",
+    "desktop": "C:\\Users\\analyst\\Desktop",
+    "work_folder": "C:\\Users\\analyst\\Documents\\Marketing"
   },
 
   "network_behavior": {

@@ -1,15 +1,19 @@
 """
 DecisionEngine - Determines next actions based on worker profile and context.
 
-Uses LLM to simulate realistic decision-making for an office worker,
+Uses LLM API to simulate realistic decision-making for an office worker,
 considering time of day, current activity, and behavioral patterns.
 """
 
 import json
+import logging
+import os
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
 from dataclasses import dataclass
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -55,15 +59,21 @@ class DecisionEngine:
     - Behavioral patterns (focus, breaks, etc.)
     """
 
-    def __init__(self, profile_path: str):
+    def __init__(self, profile_path: str, use_llm: bool = True):
         """
         Initialize with a worker profile.
 
         Args:
             profile_path: Path to the worker profile JSON file
+            use_llm: Whether to use LLM API for decisions (default True)
         """
         self.profile = self._load_profile(profile_path)
         self.action_history: list[Decision] = []
+        self.use_llm = use_llm
+        self.llm_client = None
+
+        if use_llm:
+            self._init_llm_client()
 
     def _load_profile(self, profile_path: str) -> dict:
         """Load and validate worker profile from JSON."""
@@ -81,6 +91,110 @@ class DecisionEngine:
             raise ValueError(f"Profile missing required fields: {missing}")
 
         return profile
+
+    def _init_llm_client(self):
+        """Initialize the LLM API client."""
+        try:
+            import anthropic
+            api_key = os.environ.get("ANTHROPIC_API_KEY")
+            if not api_key:
+                logger.warning("ANTHROPIC_API_KEY not set, falling back to heuristics")
+                self.use_llm = False
+                return
+            self.llm_client = anthropic.Anthropic(api_key=api_key)
+            logger.info("LLM API client initialized")
+        except ImportError:
+            logger.warning("anthropic package not installed, falling back to heuristics")
+            self.use_llm = False
+        except Exception as e:
+            logger.warning(f"Failed to initialize LLM client: {e}")
+            self.use_llm = False
+
+    def _build_llm_prompt(self, state: WorkerState) -> str:
+        """Build the prompt for the LLM to decide the next action."""
+        # Recent action history (last 5)
+        recent_actions = [
+            f"- {d.action_type}: {d.target} ({d.reasoning})"
+            for d in self.action_history[-5:]
+        ]
+        history_str = "\n".join(recent_actions) if recent_actions else "None yet (just started)"
+
+        prompt = f"""You are simulating {self.profile['name']}, a {self.profile['role']} at work.
+
+Current time: {state.current_time.strftime('%H:%M')} ({state.current_time.strftime('%A')})
+Minutes since last break: {state.minutes_since_last_break}
+Active applications: {', '.join(state.active_applications) if state.active_applications else 'None'}
+
+Recent actions:
+{history_str}
+
+Worker's typical activities:
+- Primary apps: {', '.join(self.profile['applications']['primary'])}
+- Typical websites: {', '.join(self.profile['activities']['browser']['typical_sites'][:5])}
+- Document tasks: {', '.join(self.profile['activities']['documents']['common_tasks'])}
+
+Available action types:
+- open_application: Open an app (target: outlook, chrome, edge, word, excel, notepad, calculator)
+- browse_web: Visit a website (target: URL like linkedin.com)
+- check_email: Check email inbox (target: outlook)
+- file_operation: File task (target: create_file, copy_file, move_file, delete_file)
+- idle: Take a break (target: micro_break)
+
+Based on the time, recent activity, and what a {self.profile['role']} would realistically do next, decide the next action.
+
+Think about natural task flow - don't just randomly switch activities. Consider:
+- Did you just finish something that needs follow-up?
+- Is there a natural next step in your current work?
+- Have you been working continuously and need a break?
+
+Respond with ONLY a JSON object (no markdown, no explanation):
+{{"action_type": "...", "target": "...", "duration_minutes": N, "reasoning": "brief explanation"}}"""
+
+        return prompt
+
+    def _llm_decision(self, state: WorkerState) -> Optional[Decision]:
+        """Use LLM to decide the next action."""
+        if not self.llm_client:
+            return None
+
+        try:
+            prompt = self._build_llm_prompt(state)
+
+            message = self.llm_client.messages.create(
+                model=os.environ.get("LLM_MODEL", "claude-sonnet-4-20250514"),
+                max_tokens=256,
+                messages=[
+                    {"role": "user", "content": prompt}
+                ]
+            )
+
+            response_text = message.content[0].text.strip()
+
+            # Parse JSON response
+            # Handle potential markdown code blocks
+            if response_text.startswith("```"):
+                response_text = response_text.split("```")[1]
+                if response_text.startswith("json"):
+                    response_text = response_text[4:]
+                response_text = response_text.strip()
+
+            decision_data = json.loads(response_text)
+
+            return Decision(
+                action_type=decision_data.get("action_type", "idle"),
+                target=decision_data.get("target", "micro_break"),
+                parameters={
+                    "duration_minutes": decision_data.get("duration_minutes", 5)
+                },
+                reasoning=decision_data.get("reasoning", "LLM decision")
+            )
+
+        except json.JSONDecodeError as e:
+            logger.warning(f"Failed to parse LLM response: {e}")
+            return None
+        except Exception as e:
+            logger.warning(f"LLM API error: {e}")
+            return None
 
     def decide_next_action(self, state: WorkerState) -> Decision:
         """
@@ -119,41 +233,165 @@ class DecisionEngine:
                 reasoning="Outside work hours"
             )
 
-        # TODO: Integrate with LLM for more sophisticated decisions
-        # For now, use simple heuristic-based decisions
+        # Try LLM API for intelligent decisions
+        if self.use_llm:
+            decision = self._llm_decision(state)
+            if decision:
+                return decision
+            logger.debug("LLM decision failed, falling back to heuristics")
+
+        # Fallback to heuristic-based decisions
         return self._heuristic_decision(state)
 
     def _heuristic_decision(self, state: WorkerState) -> Decision:
-        """Simple rule-based decision making (placeholder for LLM)."""
+        """Rule-based decision making with realistic variety."""
+        import random
 
-        # If no applications open, start with email
-        if not state.active_applications:
+        hour = state.current_time.hour
+        minute = state.current_time.minute
+        actions_count = len(self.action_history)
+
+        # Morning routine: Start with email
+        if hour == 9 and minute < 15 and actions_count < 3:
+            state.active_applications.append("outlook")
             return Decision(
                 action_type="open_application",
                 target="outlook",
-                parameters={},
+                parameters={"duration_minutes": 5},
                 reasoning="Starting day with email check"
             )
 
-        # Check email periodically
-        if state.minutes_since_last_break > 30:
+        # Weight activities based on time of day and profile
+        weights = self._calculate_activity_weights(state, hour)
+
+        # Select activity based on weights
+        activity = random.choices(
+            list(weights.keys()),
+            weights=list(weights.values()),
+            k=1
+        )[0]
+
+        return self._create_activity_decision(activity, state)
+
+    def _calculate_activity_weights(self, state: WorkerState, hour: int) -> dict:
+        """Calculate weighted probabilities for each activity type."""
+        weights = {
+            "email": 20,
+            "browse": 25,
+            "document": 20,
+            "application": 15,
+            "file_operation": 10,
+            "idle": 10,
+        }
+
+        # Adjust weights based on time of day
+        if hour < 10:  # Early morning: more email
+            weights["email"] += 15
+        elif 10 <= hour < 12:  # Mid-morning: productive work
+            weights["document"] += 10
+            weights["browse"] += 5
+        elif 14 <= hour < 16:  # Afternoon: mix of activities
+            weights["browse"] += 10
+            weights["idle"] += 5
+        elif hour >= 16:  # Late afternoon: wrapping up
+            weights["email"] += 10
+            weights["file_operation"] += 5
+
+        # Reduce email weight if checked recently
+        recent_emails = sum(1 for d in self.action_history[-5:]
+                          if d.action_type in ["check_email", "open_application"]
+                          and d.target == "outlook")
+        if recent_emails > 1:
+            weights["email"] = max(5, weights["email"] - 15)
+
+        # Increase idle weight if working continuously
+        if state.minutes_since_last_break > 45:
+            weights["idle"] += 15
+
+        return weights
+
+    def _create_activity_decision(self, activity: str, state: WorkerState) -> Decision:
+        """Create a decision for the selected activity type."""
+        import random
+
+        if activity == "email":
+            if "outlook" not in state.active_applications:
+                state.active_applications.append("outlook")
+                return Decision(
+                    action_type="open_application",
+                    target="outlook",
+                    parameters={"duration_minutes": 5},
+                    reasoning="Opening email client"
+                )
             return Decision(
                 action_type="check_email",
                 target="outlook",
-                parameters={"action": "check_inbox"},
-                reasoning="Regular email check"
+                parameters={"action": "check_inbox", "duration_minutes": 3},
+                reasoning="Checking inbox for new messages"
             )
 
-        # Default: browse related to work
-        sites = self.profile["activities"]["browser"]["typical_sites"]
-        import random
-        site = random.choice(sites)
-        return Decision(
-            action_type="browse_web",
-            target=site,
-            parameters={"duration_seconds": 120},
-            reasoning=f"Browsing {site} for work"
-        )
+        elif activity == "browse":
+            sites = self.profile["activities"]["browser"]["typical_sites"]
+            site = random.choice(sites)
+            if "chrome" not in state.active_applications:
+                state.active_applications.append("chrome")
+            return Decision(
+                action_type="browse_web",
+                target=site,
+                parameters={"duration_minutes": random.randint(2, 8)},
+                reasoning=f"Researching on {site}"
+            )
+
+        elif activity == "document":
+            doc_types = ["word", "excel", "powerpoint"]
+            app = random.choice(doc_types)
+            tasks = self.profile["activities"]["documents"]["common_tasks"]
+            task = random.choice(tasks)
+            if app not in state.active_applications:
+                state.active_applications.append(app)
+            return Decision(
+                action_type="open_application",
+                target=app,
+                parameters={"task": task, "duration_minutes": random.randint(5, 15)},
+                reasoning=f"Working on {task}"
+            )
+
+        elif activity == "application":
+            apps = self.profile["applications"]["primary"]
+            # Filter out already open apps for variety
+            available = [a for a in apps if a not in state.active_applications]
+            if not available:
+                available = apps
+            app = random.choice(available)
+            state.active_applications.append(app)
+            return Decision(
+                action_type="open_application",
+                target=app,
+                parameters={"duration_minutes": 5},
+                reasoning=f"Opening {app} for work"
+            )
+
+        elif activity == "file_operation":
+            operations = ["create_file", "copy_file", "move_file", "delete_file"]
+            op = random.choice(operations)
+            return Decision(
+                action_type="file_operation",
+                target=op,
+                parameters={
+                    "path": self.profile["file_paths"]["documents"],
+                    "duration_minutes": 2
+                },
+                reasoning=f"Organizing files ({op})"
+            )
+
+        else:  # idle
+            state.minutes_since_last_break = 0
+            return Decision(
+                action_type="idle",
+                target="micro_break",
+                parameters={"duration_minutes": random.randint(2, 5)},
+                reasoning="Taking a short break"
+            )
 
     def _is_work_hours(self, current_time: datetime) -> bool:
         """Check if current time is within work hours."""
