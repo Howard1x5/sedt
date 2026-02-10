@@ -49,6 +49,12 @@ class ActionExecutor:
             "click": self.click,
             "powershell": self.run_powershell,
             "file_operation": self.file_operation,
+            # Document actions
+            "edit_spreadsheet": self.edit_spreadsheet,
+            "create_document": self.create_document,
+            "create_presentation": self.create_presentation,
+            # Download action
+            "download_file": self.download_file,
         }
 
     def execute(self, action_type: str, target: str, parameters: dict) -> dict:
@@ -310,6 +316,73 @@ class ActionExecutor:
 
         return f"Unknown file operation: {target}"
 
+    def download_file(self, target: str, parameters: dict) -> str:
+        """
+        Download a file from a URL to the Downloads folder.
+
+        Generates:
+        - Sysmon Event ID 1 (Process Creation - PowerShell/curl)
+        - Sysmon Event ID 3 (Network Connection)
+        - Sysmon Event ID 11 (File Created)
+        - Sysmon Event ID 22 (DNS Query)
+        """
+        import random
+        import urllib.parse
+
+        # Default safe URLs for benign downloads (public domain / safe sources)
+        safe_urls = [
+            "https://www.gutenberg.org/files/1342/1342-0.txt",  # Pride and Prejudice
+            "https://www.gutenberg.org/files/84/84-0.txt",      # Frankenstein
+            "https://www.gutenberg.org/files/11/11-0.txt",      # Alice in Wonderland
+            "https://raw.githubusercontent.com/datasets/covid-19/main/data/countries-aggregated.csv",
+            "https://raw.githubusercontent.com/datasets/population/master/data/population.csv",
+        ]
+
+        # Use provided URL or pick a safe default
+        if target and target.startswith("http"):
+            url = target
+        else:
+            url = random.choice(safe_urls)
+
+        # Determine filename from URL or generate one
+        filename = parameters.get("filename")
+        if not filename:
+            parsed = urllib.parse.urlparse(url)
+            filename = os.path.basename(parsed.path) or f"download_{random.randint(1000, 9999)}.txt"
+
+        # Download to Downloads folder
+        download_path = Path(os.path.expandvars(r"C:\Users\analyst\Downloads"))
+        download_path.mkdir(parents=True, exist_ok=True)
+        file_path = download_path / filename
+
+        # Use PowerShell Invoke-WebRequest for realistic telemetry
+        # This generates process creation + network events
+        ps_command = f'Invoke-WebRequest -Uri "{url}" -OutFile "{file_path}" -UseBasicParsing'
+
+        try:
+            result = subprocess.run(
+                ["powershell", "-Command", ps_command],
+                capture_output=True,
+                text=True,
+                timeout=60
+            )
+
+            if result.returncode != 0:
+                # Try alternative method with curl if available
+                curl_result = subprocess.run(
+                    ["curl", "-L", "-o", str(file_path), url],
+                    capture_output=True,
+                    text=True,
+                    timeout=60
+                )
+                if curl_result.returncode != 0:
+                    raise RuntimeError(f"Download failed: {result.stderr or curl_result.stderr}")
+
+            return f"Downloaded {url} to {file_path}"
+
+        except subprocess.TimeoutExpired:
+            return f"Download timed out for {url}"
+
     # ==================== Email Actions ====================
 
     def check_email(self, target: str, parameters: dict) -> str:
@@ -409,6 +482,202 @@ class ActionExecutor:
             raise RuntimeError(f"PowerShell error: {result.stderr}")
 
         return result.stdout.strip()
+
+    # ==================== Document Actions ====================
+
+    def edit_spreadsheet(self, target: str, parameters: dict) -> str:
+        """
+        Create or edit a spreadsheet (CSV format since Office not installed).
+
+        Generates: Sysmon Event ID 11 (File Created/Modified)
+        """
+        import csv
+        import random
+
+        # Default to Downloads folder for Sysmon visibility
+        if not target or target == "spreadsheet":
+            base_path = Path(os.path.expandvars(r"C:\Users\analyst\Downloads"))
+            base_path.mkdir(parents=True, exist_ok=True)
+            filename = f"Budget_Report_{random.randint(100, 999)}.csv"
+            file_path = base_path / filename
+        else:
+            file_path = Path(os.path.expandvars(target))
+
+        # Generate realistic spreadsheet content
+        content_type = parameters.get("content_type", "budget")
+        rows = parameters.get("rows", random.randint(10, 30))
+
+        data = []
+        if content_type == "budget":
+            headers = ["Category", "Q1", "Q2", "Q3", "Q4", "Total"]
+            categories = ["Marketing", "Sales", "Operations", "IT", "HR", "R&D"]
+            data.append(headers)
+            for cat in categories[:rows]:
+                q_values = [random.randint(5000, 50000) for _ in range(4)]
+                data.append([cat] + q_values + [sum(q_values)])
+        elif content_type == "contacts":
+            headers = ["Name", "Email", "Phone", "Department"]
+            data.append(headers)
+            names = ["John Smith", "Jane Doe", "Bob Wilson", "Alice Chen", "Mike Johnson"]
+            depts = ["Marketing", "Sales", "Engineering", "Support", "Finance"]
+            for i in range(min(rows, len(names))):
+                data.append([names[i], f"{names[i].lower().replace(' ', '.')}@company.com",
+                           f"555-{random.randint(1000, 9999)}", random.choice(depts)])
+        else:
+            headers = ["Item", "Value", "Notes"]
+            data.append(headers)
+            for i in range(rows):
+                data.append([f"Item_{i+1}", random.randint(1, 100), ""])
+
+        # Write CSV file
+        file_path.parent.mkdir(parents=True, exist_ok=True)
+        with open(file_path, "w", newline="", encoding="utf-8") as f:
+            writer = csv.writer(f)
+            writer.writerows(data)
+
+        # Open in notepad to simulate viewing/editing
+        subprocess.Popen(["notepad.exe", str(file_path)])
+
+        return f"Created spreadsheet {file_path} with {len(data)} rows"
+
+    def create_document(self, target: str, parameters: dict) -> str:
+        """
+        Create a text document (RTF/TXT since Office not installed).
+
+        Generates: Sysmon Event ID 11 (File Created)
+        """
+        import random
+
+        # Default to Documents folder
+        if not target or target == "document":
+            base_path = Path(os.path.expandvars(r"C:\Users\analyst\Documents"))
+            base_path.mkdir(parents=True, exist_ok=True)
+            doc_types = ["Meeting_Notes", "Report", "Memo", "Summary", "Draft"]
+            filename = f"{random.choice(doc_types)}_{datetime.now().strftime('%Y%m%d_%H%M')}.txt"
+            file_path = base_path / filename
+        else:
+            file_path = Path(os.path.expandvars(target))
+
+        # Generate realistic document content
+        doc_type = parameters.get("doc_type", "meeting_notes")
+        content = parameters.get("content", "")
+
+        if not content:
+            if doc_type == "meeting_notes":
+                content = f"""Meeting Notes - {datetime.now().strftime('%B %d, %Y')}
+
+Attendees: Marketing Team
+
+Agenda:
+1. Q4 Campaign Review
+2. Budget Discussion
+3. Upcoming Initiatives
+
+Notes:
+- Discussed performance metrics from Q4
+- Budget allocation for next quarter approved
+- Action items assigned to team leads
+
+Next Meeting: TBD
+"""
+            elif doc_type == "report":
+                content = f"""Weekly Status Report
+Date: {datetime.now().strftime('%Y-%m-%d')}
+Author: Analyst
+
+Summary:
+This week's activities included regular operational tasks,
+team meetings, and project updates.
+
+Key Accomplishments:
+- Completed quarterly review
+- Updated documentation
+- Attended training session
+
+Next Week:
+- Continue project work
+- Prepare monthly report
+"""
+            else:
+                content = f"Document created at {datetime.now().isoformat()}\n\n[Content placeholder]"
+
+        # Write document
+        file_path.parent.mkdir(parents=True, exist_ok=True)
+        with open(file_path, "w", encoding="utf-8") as f:
+            f.write(content)
+
+        # Open in notepad
+        subprocess.Popen(["notepad.exe", str(file_path)])
+
+        return f"Created document {file_path}"
+
+    def create_presentation(self, target: str, parameters: dict) -> str:
+        """
+        Create a presentation outline (TXT since PowerPoint not installed).
+
+        Generates: Sysmon Event ID 11 (File Created)
+        """
+        import random
+
+        # Default to Documents folder
+        if not target or target == "presentation":
+            base_path = Path(os.path.expandvars(r"C:\Users\analyst\Documents"))
+            base_path.mkdir(parents=True, exist_ok=True)
+            topics = ["Quarterly_Review", "Project_Update", "Strategy", "Training"]
+            filename = f"{random.choice(topics)}_Presentation_{datetime.now().strftime('%Y%m%d')}.txt"
+            file_path = base_path / filename
+        else:
+            file_path = Path(os.path.expandvars(target))
+
+        # Generate presentation outline
+        topic = parameters.get("topic", "Quarterly Review")
+        slides = parameters.get("slides", random.randint(5, 10))
+
+        content = f"""PRESENTATION OUTLINE
+====================
+Title: {topic}
+Date: {datetime.now().strftime('%B %d, %Y')}
+
+---
+
+SLIDE 1: Title Slide
+- {topic}
+- Presented by: Marketing Team
+
+SLIDE 2: Agenda
+- Overview
+- Key Points
+- Discussion
+- Q&A
+
+SLIDE 3: Executive Summary
+- Main takeaways
+- Key metrics
+- Recommendations
+
+"""
+        for i in range(4, slides + 1):
+            content += f"""SLIDE {i}: Topic {i-3}
+- Point 1
+- Point 2
+- Supporting data
+
+"""
+
+        content += """FINAL SLIDE: Questions?
+- Contact information
+- Next steps
+"""
+
+        # Write presentation outline
+        file_path.parent.mkdir(parents=True, exist_ok=True)
+        with open(file_path, "w", encoding="utf-8") as f:
+            f.write(content)
+
+        # Open in notepad
+        subprocess.Popen(["notepad.exe", str(file_path)])
+
+        return f"Created presentation outline {file_path}"
 
 
 def run_server(host: str = "0.0.0.0", port: int = 9999):

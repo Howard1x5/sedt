@@ -5,12 +5,11 @@ Manages the simulation loop, time compression, and coordination between
 the DecisionEngine (local) and ActionExecutor (remote Windows VM).
 
 Architecture:
-    This agent runs on a Linux host and sends action commands to
-    a Windows VM via SSH using RemoteExecutor.
+    This agent runs on Linux (LXC 140) and sends action commands to
+    the Windows VM (VM 111) via SSH using RemoteExecutor.
 """
 
 import logging
-import os
 from datetime import datetime, timedelta
 from typing import Optional
 from dataclasses import dataclass, field
@@ -35,10 +34,10 @@ class SimulationConfig:
     end_time: Optional[datetime] = None
     dry_run: bool = False  # If True, don't execute real actions
 
-    # Remote Windows VM configuration (use environment variables)
-    windows_host: str = field(default_factory=lambda: os.environ.get("SEDT_WINDOWS_HOST", "192.168.1.100"))
-    windows_user: str = field(default_factory=lambda: os.environ.get("SEDT_WINDOWS_USER", "analyst"))
-    windows_password: Optional[str] = field(default_factory=lambda: os.environ.get("SEDT_WINDOWS_PASSWORD"))
+    # Remote Windows VM configuration
+    windows_host: str = "192.168.1.100"  # Example IP - change for your environment  # NOSEC
+    windows_user: str = "analyst"
+    windows_password: Optional[str] = "analyst"  # Uses sshpass if set
     windows_ssh_port: int = 22
     windows_ssh_key: Optional[str] = None
     windows_python_path: str = r"C:\Users\analyst\AppData\Local\Programs\Python\Python311\python.exe"

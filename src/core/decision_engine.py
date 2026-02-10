@@ -93,7 +93,7 @@ class DecisionEngine:
         return profile
 
     def _init_llm_client(self):
-        """Initialize the LLM API client."""
+        """Initialize the Anthropic LLM client."""
         try:
             import anthropic
             api_key = os.environ.get("ANTHROPIC_API_KEY")
@@ -134,11 +134,17 @@ Worker's typical activities:
 - Document tasks: {', '.join(self.profile['activities']['documents']['common_tasks'])}
 
 Available action types:
-- open_application: Open an app (target: outlook, chrome, edge, word, excel, notepad, calculator)
-- browse_web: Visit a website (target: URL like linkedin.com)
+- open_application: Open an app (target: outlook, edge, notepad, calculator)
+- browse_web: Visit a website for research (target: URL like linkedin.com, canva.com)
 - check_email: Check email inbox (target: outlook)
+- edit_spreadsheet: Create/edit a budget or data spreadsheet (target: spreadsheet)
+- create_document: Write meeting notes, reports, or memos (target: document)
+- create_presentation: Draft a presentation outline (target: presentation)
 - file_operation: File task (target: create_file, copy_file, move_file, delete_file)
+- download_file: Download a resource file from the web (target: url or empty for default)
 - idle: Take a break (target: micro_break)
+
+IMPORTANT: A marketing coordinator spends most time on documents, spreadsheets, and presentations - NOT constantly browsing. Only browse when researching specific topics. Vary activities naturally.
 
 Based on the time, recent activity, and what a {self.profile['role']} would realistically do next, decide the next action.
 
@@ -161,7 +167,7 @@ Respond with ONLY a JSON object (no markdown, no explanation):
             prompt = self._build_llm_prompt(state)
 
             message = self.llm_client.messages.create(
-                model=os.environ.get("LLM_MODEL", "claude-sonnet-4-20250514"),
+                model="claude-sonnet-4-20250514",
                 max_tokens=256,
                 messages=[
                     {"role": "user", "content": prompt}
@@ -275,27 +281,37 @@ Respond with ONLY a JSON object (no markdown, no explanation):
 
     def _calculate_activity_weights(self, state: WorkerState, hour: int) -> dict:
         """Calculate weighted probabilities for each activity type."""
+        # Balanced weights favoring document work (typical marketing coordinator)
         weights = {
-            "email": 20,
-            "browse": 25,
-            "document": 20,
-            "application": 15,
-            "file_operation": 10,
+            "email": 18,
+            "browse": 10,  # Reduced - browsing should be occasional, not dominant
+            "spreadsheet": 15,  # Budget reports, data analysis
+            "document": 18,  # Meeting notes, memos, reports
+            "presentation": 10,  # Presentation drafts
+            "application": 8,
+            "file_operation": 9,
+            "download": 5,  # Occasional file downloads (templates, resources)
             "idle": 10,
         }
 
         # Adjust weights based on time of day
-        if hour < 10:  # Early morning: more email
+        if hour < 10:  # Early morning: email and planning
             weights["email"] += 15
-        elif 10 <= hour < 12:  # Mid-morning: productive work
-            weights["document"] += 10
+            weights["spreadsheet"] += 5
+        elif 10 <= hour < 12:  # Mid-morning: productive document work
+            weights["document"] += 12
+            weights["spreadsheet"] += 8
+            weights["presentation"] += 5
+        elif 12 <= hour < 14:  # Around lunch: lighter tasks
             weights["browse"] += 5
-        elif 14 <= hour < 16:  # Afternoon: mix of activities
-            weights["browse"] += 10
             weights["idle"] += 5
-        elif hour >= 16:  # Late afternoon: wrapping up
+        elif 14 <= hour < 16:  # Afternoon: continued work with some breaks
+            weights["document"] += 8
+            weights["presentation"] += 5
+            weights["idle"] += 3
+        elif hour >= 16:  # Late afternoon: wrapping up, file organization
             weights["email"] += 10
-            weights["file_operation"] += 5
+            weights["file_operation"] += 8
 
         # Reduce email weight if checked recently
         recent_emails = sum(1 for d in self.action_history[-5:]
@@ -303,6 +319,12 @@ Respond with ONLY a JSON object (no markdown, no explanation):
                           and d.target == "outlook")
         if recent_emails > 1:
             weights["email"] = max(5, weights["email"] - 15)
+
+        # Reduce browse weight if browsed recently (prevent browse loops)
+        recent_browse = sum(1 for d in self.action_history[-5:]
+                          if d.action_type == "browse_web")
+        if recent_browse > 1:
+            weights["browse"] = max(3, weights["browse"] - 10)
 
         # Increase idle weight if working continuously
         if state.minutes_since_last_break > 45:
@@ -333,27 +355,51 @@ Respond with ONLY a JSON object (no markdown, no explanation):
         elif activity == "browse":
             sites = self.profile["activities"]["browser"]["typical_sites"]
             site = random.choice(sites)
-            if "chrome" not in state.active_applications:
-                state.active_applications.append("chrome")
+            # Use Edge instead of Chrome (matches lean Windows 11)
+            if "edge" not in state.active_applications:
+                state.active_applications.append("edge")
             return Decision(
                 action_type="browse_web",
                 target=site,
-                parameters={"duration_minutes": random.randint(2, 8)},
+                parameters={"duration_minutes": random.randint(2, 5)},
                 reasoning=f"Researching on {site}"
             )
 
-        elif activity == "document":
-            doc_types = ["word", "excel", "powerpoint"]
-            app = random.choice(doc_types)
-            tasks = self.profile["activities"]["documents"]["common_tasks"]
+        elif activity == "spreadsheet":
+            # Use the new edit_spreadsheet action
+            content_types = ["budget", "contacts", "data"]
+            content_type = random.choice(content_types)
+            tasks = ["quarterly budget review", "updating contact list", "analyzing campaign data"]
             task = random.choice(tasks)
-            if app not in state.active_applications:
-                state.active_applications.append(app)
             return Decision(
-                action_type="open_application",
-                target=app,
-                parameters={"task": task, "duration_minutes": random.randint(5, 15)},
+                action_type="edit_spreadsheet",
+                target="spreadsheet",
+                parameters={"content_type": content_type, "duration_minutes": random.randint(5, 15)},
                 reasoning=f"Working on {task}"
+            )
+
+        elif activity == "document":
+            # Use the new create_document action
+            doc_types = ["meeting_notes", "report", "memo"]
+            doc_type = random.choice(doc_types)
+            tasks = self.profile["activities"]["documents"]["common_tasks"]
+            task = random.choice(tasks) if tasks else "drafting document"
+            return Decision(
+                action_type="create_document",
+                target="document",
+                parameters={"doc_type": doc_type, "duration_minutes": random.randint(5, 12)},
+                reasoning=f"Working on {task}"
+            )
+
+        elif activity == "presentation":
+            # Use the new create_presentation action
+            topics = ["Q4 Review", "Campaign Update", "Team Meeting", "Strategy Overview"]
+            topic = random.choice(topics)
+            return Decision(
+                action_type="create_presentation",
+                target="presentation",
+                parameters={"topic": topic, "slides": random.randint(5, 10), "duration_minutes": random.randint(8, 15)},
+                reasoning=f"Drafting {topic} presentation"
             )
 
         elif activity == "application":
@@ -372,7 +418,7 @@ Respond with ONLY a JSON object (no markdown, no explanation):
             )
 
         elif activity == "file_operation":
-            operations = ["create_file", "copy_file", "move_file", "delete_file"]
+            operations = ["create_file", "copy_file", "move_file"]
             op = random.choice(operations)
             return Decision(
                 action_type="file_operation",
@@ -382,6 +428,22 @@ Respond with ONLY a JSON object (no markdown, no explanation):
                     "duration_minutes": 2
                 },
                 reasoning=f"Organizing files ({op})"
+            )
+
+        elif activity == "download":
+            # Download resources - templates, stock images, data files
+            resources = [
+                ("marketing template", ""),
+                ("stock image", ""),
+                ("data file", ""),
+                ("report template", ""),
+            ]
+            resource_name, url = random.choice(resources)
+            return Decision(
+                action_type="download_file",
+                target=url,  # Empty uses safe defaults in ActionExecutor
+                parameters={"duration_minutes": random.randint(1, 3)},
+                reasoning=f"Downloading {resource_name}"
             )
 
         else:  # idle

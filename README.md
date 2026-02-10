@@ -60,9 +60,11 @@ The DecisionEngine uses an LLM API to make contextual decisions based on:
 Falls back to weighted heuristics if API unavailable.
 
 ### Realistic Action Execution
-- **Process creation**: Opens real applications (Edge, Notepad, etc.)
-- **Web browsing**: Visits role-appropriate websites
-- **File operations**: Creates, copies, moves files in monitored directories
+- **Process creation**: Opens real applications (Edge, Notepad, Outlook)
+- **Web browsing**: Visits role-appropriate websites with DNS/network telemetry
+- **Document creation**: Spreadsheets, documents, presentations with file I/O
+- **File operations**: Creates, copies, moves, deletes files in monitored directories
+- **File downloads**: Downloads resources via PowerShell (generates network + file events)
 - **Email simulation**: Opens mail client, simulates inbox checks
 
 ### Socket-Based Communication
@@ -145,7 +147,50 @@ print(f"Actions executed: {stats.actions_executed}")
 print(f"Simulated duration: {stats.simulated_duration}")
 ```
 
-## Validation
+## Wazuh Integration
+
+SEDT includes a `WazuhCollector` for programmatic alert analysis:
+
+```python
+from src.core.wazuh_collector import WazuhCollector
+
+collector = WazuhCollector(
+    wazuh_host='10.98.1.121',
+    api_password=os.environ.get('WAZUH_API_PASSWORD'),
+    indexer_password=os.environ.get('WAZUH_INDEXER_PASSWORD')
+)
+
+# Pull alerts from simulation window
+alerts = collector.get_alerts(start_time, end_time, agent_id='010')
+summary = collector.get_alerts_summary(start_time, end_time)
+
+# Classify as FP/TP
+results = collector.classify_alerts(alerts, attack_injected=False)
+print(f"False positive rate: {results['false_positive_rate']:.1%}")
+```
+
+## Validation Results
+
+**Session 1 (Phase 2A) - Marketing Coordinator Profile:**
+
+| Metric | Result |
+|--------|--------|
+| Actions executed | 76 |
+| Success rate | 100% |
+| Simulated duration | 8 hours |
+| Real duration | 2.2 minutes |
+| Time compression | 225x |
+
+**Action Distribution:**
+- Document creation: 25%
+- Idle/breaks: 17%
+- File operations: 13%
+- Email: 9%
+- Spreadsheets: 8%
+- Presentations: 8%
+- Downloads: 8%
+- Web browsing: 7%
+- Applications: 5%
 
 Log output is validated against:
 
