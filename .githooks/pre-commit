@@ -28,6 +28,11 @@ PATTERNS["Private IP (10.x.x.x)"]='10\.[0-9]+\.[0-9]+\.[0-9]+'
 PATTERNS["Private IP (172.16-31.x.x)"]='172\.(1[6-9]|2[0-9]|3[01])\.[0-9]+\.[0-9]+'
 PATTERNS["Private IP (192.168.x.x)"]='192\.168\.[0-9]+\.[0-9]+'
 
+# === STRICT BLOCKS (cannot be bypassed with NOSEC) ===
+# Operational network subnets that should NEVER appear in public code
+declare -A STRICT_BLOCKS
+STRICT_BLOCKS["Operational subnet 10.98.x.x"]='10\.98\.[0-9]+\.[0-9]+'
+
 # === API Keys & Tokens ===
 PATTERNS["Anthropic API Key"]='sk-ant-api[a-zA-Z0-9_-]+'
 PATTERNS["OpenAI API Key"]='sk-[a-zA-Z0-9]{20,}'
@@ -88,6 +93,20 @@ for FILE in $STAGED_FILES; do
     if [ -z "$CONTENT" ]; then
         continue
     fi
+
+    # First check STRICT_BLOCKS (no NOSEC bypass allowed)
+    for PATTERN_NAME in "${!STRICT_BLOCKS[@]}"; do
+        PATTERN="${STRICT_BLOCKS[$PATTERN_NAME]}"
+        MATCHES=$(echo "$CONTENT" | grep -nE "$PATTERN" 2>/dev/null || true)
+
+        if [ -n "$MATCHES" ]; then
+            ISSUES_FOUND=1
+            WARNINGS+="\n${RED}[BLOCKED] $FILE - Found: $PATTERN_NAME (NOSEC bypass NOT allowed)${NC}\n"
+            while IFS= read -r line; do
+                WARNINGS+="    Line: $line\n"
+            done <<< "$MATCHES"
+        fi
+    done
 
     for PATTERN_NAME in "${!PATTERNS[@]}"; do
         PATTERN="${PATTERNS[$PATTERN_NAME]}"
