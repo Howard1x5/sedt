@@ -216,6 +216,10 @@ Log output is validated against:
 
 - [detection-as-code](https://github.com/Howard1x5/detection-as-code) - Detection rules tested with SEDT
 
+## Roadmap
+
+SEDT currently generates benign worker-simulation telemetry only — no adversarial/attack behavior is modeled yet. The next planned stage is extending it to include attack behavior so its output can directly validate [detection-as-code](https://github.com/Howard1x5/detection-as-code)'s detection rules against realistic synthetic data, closing the loop between detection engineering and detection testing. Not yet implemented — noting the gap rather than overstating current capability.
+
 ## License
 
 MIT
